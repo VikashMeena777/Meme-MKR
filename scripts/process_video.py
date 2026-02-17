@@ -57,6 +57,8 @@ def main():
     video_id = os.environ.get("VIDEO_ID")
     reddit_title = os.environ.get("REDDIT_TITLE", "")
     reddit_sub = os.environ.get("REDDIT_SUB", "")
+    # Pre-resolved v.redd.it URL from the proxy (for requests-based fallback)
+    reddit_video_url_env = os.environ.get("REDDIT_VIDEO_URL", "").strip()
 
     if not video_url or not video_id:
         print("ERROR: VIDEO_URL and VIDEO_ID are required", file=sys.stderr)
@@ -75,7 +77,8 @@ def main():
 
     try:
         # ── Stage 0: Pre-validate Reddit URL ─────────────────────────────
-        resolved_video_url = None  # v.redd.it URL for fallback downloads
+        # Use REDDIT_VIDEO_URL env if already provided (pre-resolved by proxy)
+        resolved_video_url = reddit_video_url_env if reddit_video_url_env else None
         if "reddit.com" in video_url or "redd.it" in video_url:
             log_stage("PRE-VALIDATE URL")
             is_video, resolved_url = check_reddit_post_type(video_url)
@@ -86,12 +89,11 @@ def main():
                 save_output(output, video_id)
                 notify_n8n(output)
                 return
-            if resolved_url:
-                print(f"  Resolved video URL: {resolved_url}")
-                # DON'T replace video_url — yt-dlp needs the Reddit post URL
-                # to use its [Reddit] extractor with cookie support.
-                # Store resolved URL separately for requests-based fallback.
+            if resolved_url and not resolved_video_url:
                 resolved_video_url = resolved_url
+                print(f"  Resolved video URL: {resolved_video_url}")
+            elif resolved_video_url:
+                print(f"  Using pre-resolved video URL: {resolved_video_url}")
 
         # ── Stage 1: Download ─────────────────────────────────────────────
         log_stage("DOWNLOAD")
