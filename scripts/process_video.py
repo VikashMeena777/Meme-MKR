@@ -896,8 +896,16 @@ def generate_meme_text(context):
     if not GROQ_API_KEY:
         raise RuntimeError("GROQ_API_KEY not set")
 
-    prompt = f"""You are an expert viral meme creator for Indian Gen-Z Instagram audience.
-You specialize in Hinglish (Hindi + English mix) meme content.
+    # Gather available SFX names for the AI
+    sfx_dir = "assets/sfx"
+    available_sfx = []
+    if os.path.isdir(sfx_dir):
+        available_sfx = [os.path.splitext(f)[0] for f in os.listdir(sfx_dir) if f.endswith('.mp3')]
+
+    sfx_list_str = ", ".join(available_sfx[:40])  # top 40 for prompt size
+
+    prompt = f"""You are India's #1 viral meme creator for Gen-Z Instagram/Reels.
+You make Hinglish (Hindi + English mix) memes that get MILLIONS of views.
 
 ═══ VIDEO CONTEXT ═══
 
@@ -917,13 +925,19 @@ Scene Type: {context['scene_type']}
 
 1. If transcript is weak/low confidence → rely MORE on visual descriptions
 2. If both are unclear → infer the most likely relatable Indian situation
-3. top_text MUST be in Hinglish (Hindi-English mix) for Indian audience
-4. Must be genuinely FUNNY, relatable, and viral-worthy
-5. Keep top_text under 60 characters
-6. The meme should feel like something a big meme page would post
-7. Use POV/relatable/cringe/savage tone as appropriate
-8. If the video has talking, consider "subtitle" style
-9. Choose SFX that enhances the punchline timing
+3. top_text MUST be 4-6 words in Hinglish — a full relatable sentence. NOT 2-3 words.
+   Examples: "Jab teacher unexpectedly roll call le le", "POV: Dost ne teri crush ko follow kiya"
+4. Must be genuinely FUNNY, savage, cringe, or relatable — viral-worthy
+5. The meme should feel like something @IndianDankMemes or @theindianmemer would post
+6. Use POV/relatable/cringe/savage tone as appropriate
+7. If the video has talking, consider "subtitle" style
+8. subtitle_clean MUST be in Hinglish and SHORT — max 2-3 words per line, separated by newlines.
+   Example: "Bhai dekh\naaj mera\ndin hai"
+9. Pick 3-4 DIFFERENT sound effects from the available SFX list below.
+   Place them at different moments (as percentage of video duration).
+   Match SFX to the context — reactions, punchlines, awkward moments, etc.
+
+Available SFX: {sfx_list_str}
 
 ═══ RETURN FORMAT ═══
 
@@ -931,13 +945,18 @@ Return ONLY valid JSON, no markdown, no explanation:
 {{
   "situation_summary": "Brief 1-2 line description of what happens in the video",
   "meme_hook": "Short attention-grabbing hook (max 10 words)",
-  "top_text": "Main meme overlay text — Hinglish, punchy, max 60 chars",
+  "top_text": "4-6 word Hinglish relatable meme text — savage/funny/cringe",
   "bottom_text": "Optional second line for top_bottom style, or empty string",
-  "subtitle_clean": "Rewritten clean dialogue for subtitle overlay",
+  "subtitle_clean": "Hinglish dialogue, 2-3 words per line, separated by newlines",
   "hashtags": ["10", "relevant", "indian", "meme", "hashtags"],
   "emotion_detected": "{context['detected_emotion']}",
   "confidence_score": 8,
-  "sfx_suggestion": "vine_boom|laugh|bruh|suspense|none",
+  "sfx_suggestions": [
+    {{"sfx": "sfx-filename-from-list", "at_percent": 15}},
+    {{"sfx": "another-sfx", "at_percent": 45}},
+    {{"sfx": "third-sfx", "at_percent": 75}},
+    {{"sfx": "final-sfx", "at_percent": 92}}
+  ],
   "meme_style": "pov|top_bottom|subtitle|caption",
   "caption": "Full Instagram caption — Hinglish hook + emojis + CTA + line break + hashtags"
 }}"""
@@ -1052,14 +1071,45 @@ def validate_meme(meme_data, context):
 # ─── Rendering ───────────────────────────────────────────────────────────────
 
 def generate_srt(segments, output_path):
-    """Generate SRT subtitle file from Whisper segments."""
+    """Generate SRT subtitle file from Whisper segments.
+    
+    Splits each segment into 2-3 word chunks for punchy, 
+    short-burst subtitle display (TikTok/Reels style).
+    """
+    srt_index = 1
     with open(output_path, "w", encoding="utf-8") as f:
-        for i, seg in enumerate(segments, 1):
-            start = format_timestamp(seg["start"])
-            end = format_timestamp(seg["end"])
+        for seg in segments:
             text = seg["text"].strip()
-            if text:
-                f.write(f"{i}\n{start} --> {end}\n{text}\n\n")
+            if not text:
+                continue
+            
+            words = text.split()
+            seg_start = seg["start"]
+            seg_end = seg["end"]
+            seg_duration = seg_end - seg_start
+            
+            if len(words) <= 3:
+                # Already short enough
+                start_ts = format_timestamp(seg_start)
+                end_ts = format_timestamp(seg_end)
+                f.write(f"{srt_index}\n{start_ts} --> {end_ts}\n{text}\n\n")
+                srt_index += 1
+            else:
+                # Split into 2-3 word chunks with proportional timing
+                chunk_size = 2 if len(words) <= 6 else 3
+                chunks = []
+                for j in range(0, len(words), chunk_size):
+                    chunks.append(" ".join(words[j:j+chunk_size]))
+                
+                chunk_duration = seg_duration / len(chunks) if chunks else seg_duration
+                
+                for k, chunk in enumerate(chunks):
+                    c_start = seg_start + k * chunk_duration
+                    c_end = min(c_start + chunk_duration, seg_end)
+                    start_ts = format_timestamp(c_start)
+                    end_ts = format_timestamp(c_end)
+                    f.write(f"{srt_index}\n{start_ts} --> {end_ts}\n{chunk}\n\n")
+                    srt_index += 1
 
 
 def format_timestamp(seconds):
@@ -1145,21 +1195,44 @@ def render_meme(video_path, meme_data, transcript_data, video_id):
             ])
             current_input = step2_output
 
-    # ── Step 3: Sound Effects ─────────────────────────────────────────────
-    sfx_file = find_asset(f"assets/sfx/{sfx_type}.mp3")
-    if sfx_type != "none" and sfx_file:
+    # ── Step 3: Sound Effects (Multiple, Context-Aware) ────────────────────
+    sfx_suggestions = meme_data.get("sfx_suggestions", [])
+    # Backward compat: old single sfx_suggestion field
+    if not sfx_suggestions and sfx_type != "none":
+        sfx_suggestions = [{"sfx": sfx_type, "at_percent": 90}]
+
+    # Filter to only SFX files that actually exist
+    valid_sfx = []
+    for s in sfx_suggestions:
+        sfx_name = s.get("sfx", "").strip()
+        sfx_file = find_asset(f"assets/sfx/{sfx_name}.mp3")
+        if sfx_file:
+            valid_sfx.append({"file": sfx_file, "at_percent": s.get("at_percent", 50)})
+
+    if valid_sfx:
         step3_output = f"{WORK_DIR}/step3_sfx.mp4"
         duration = get_video_duration(current_input)
 
-        # Place SFX 1.5 seconds before the end (punchline moment)
-        delay_ms = int(max(0, (duration - 1.5)) * 1000)
+        # Build FFmpeg inputs and filter_complex for multiple SFX
+        sfx_inputs = []
+        filter_parts = []
+        mix_labels = ["[0:a]"]
+
+        for idx, sfx in enumerate(valid_sfx, 1):
+            sfx_inputs.extend(["-i", sfx["file"]])
+            delay_ms = int(max(0, (duration * sfx["at_percent"] / 100)) * 1000)
+            label = f"sfx{idx}"
+            filter_parts.append(f"[{idx}:a]adelay={delay_ms}|{delay_ms},volume=0.8[{label}]")
+            mix_labels.append(f"[{label}]")
+
+        mix_input = "".join(mix_labels)
+        filter_parts.append(f"{mix_input}amix=inputs={len(mix_labels)}:duration=first:dropout_transition=2[aout]")
+        filter_complex = ";".join(filter_parts)
 
         run_ffmpeg([
             "-i", current_input,
-            "-i", sfx_file,
-            "-filter_complex",
-            f"[1:a]adelay={delay_ms}|{delay_ms},volume=0.9[sfx];"
-            f"[0:a][sfx]amix=inputs=2:duration=first:dropout_transition=2[aout]",
+            *sfx_inputs,
+            "-filter_complex", filter_complex,
             "-map", "0:v", "-map", "[aout]",
             "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
             step3_output,
@@ -1207,8 +1280,8 @@ def render_meme(video_path, meme_data, transcript_data, video_id):
         "scale=1080:1920:force_original_aspect_ratio=decrease,"
         "pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,"
         f"drawtext=text='{watermark_escaped}':"
-        "fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:"
-        "fontcolor=white@0.65:fontsize=24:"
+        f"fontfile={_find_font()}:"
+        "fontcolor=white@0.65:fontsize=18:"
         "x=w-tw-20:y=22:"
         "shadowcolor=black@0.4:shadowx=1:shadowy=1"
     )
