@@ -74,6 +74,21 @@ def main():
     }
 
     try:
+        # ── Stage 0: Pre-validate Reddit URL ─────────────────────────────
+        if "reddit.com" in video_url or "redd.it" in video_url:
+            log_stage("PRE-VALIDATE URL")
+            is_video, resolved_url = check_reddit_post_type(video_url)
+            if not is_video:
+                output["status"] = "skipped"
+                output["reason"] = "Post is not a video (image/text/link post)"
+                print(f"  ⏭️ SKIPPED: Not a video post")
+                save_output(output, video_id)
+                notify_n8n(output)
+                return
+            if resolved_url:
+                print(f"  Resolved video URL: {resolved_url}")
+                video_url = resolved_url
+
         # ── Stage 1: Download ─────────────────────────────────────────────
         log_stage("DOWNLOAD")
         raw_video = download_video(video_url, video_id)
@@ -200,6 +215,93 @@ def main():
 
 
 # ─── Stage Functions ─────────────────────────────────────────────────────────
+
+def check_reddit_post_type(url):
+    """Pre-check: verify the Reddit URL is a video post, not an image/text post.
+    
+    Returns: (is_video: bool, resolved_video_url: str or None)
+    """
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json",
+    }
+
+    # v.redd.it URLs are always video
+    if "v.redd.it" in url:
+        return True, url
+
+    try:
+        json_url = None
+        if "reddit.com" in url:
+            json_url = url.rstrip("/") + ".json"
+        elif "redd.it" in url:
+            json_url = f"https://www.reddit.com/comments/{url.split('/')[-1]}.json"
+        
+        if not json_url:
+            return True, None  # Can't check, assume video
+
+        cookie_jar = _load_cookies_for_requests()
+        resp = requests.get(json_url, headers=headers, cookies=cookie_jar, timeout=15, allow_redirects=True)
+        
+        if resp.status_code != 200:
+            print(f"  Could not verify post type (HTTP {resp.status_code}), trying anyway...")
+            return True, None  # Can't check, try download anyway
+
+        data = resp.json()
+
+        # Navigate Reddit JSON
+        if isinstance(data, list) and len(data) > 0:
+            post_data = data[0].get("data", {}).get("children", [{}])[0].get("data", {})
+        elif isinstance(data, dict):
+            post_data = data.get("data", {}).get("children", [{}])[0].get("data", {})
+        else:
+            return True, None
+
+        is_video = post_data.get("is_video", False)
+        post_hint = post_data.get("post_hint", "")
+        domain = post_data.get("domain", "")
+
+        print(f"  Post type: is_video={is_video}, hint={post_hint}, domain={domain}")
+
+        # Check if it's a video
+        if is_video:
+            # Extract the video URL
+            media = post_data.get("secure_media") or post_data.get("media")
+            if media and "reddit_video" in media:
+                video_url = media["reddit_video"].get("fallback_url", "")
+                video_url = video_url.split("?")[0]
+                return True, video_url
+            return True, None
+
+        # Check crossposts
+        crosspost = post_data.get("crosspost_parent_list", [])
+        if crosspost and crosspost[0].get("is_video"):
+            media = crosspost[0].get("secure_media") or crosspost[0].get("media")
+            if media and "reddit_video" in media:
+                video_url = media["reddit_video"].get("fallback_url", "")
+                video_url = video_url.split("?")[0]
+                return True, video_url
+
+        # Check for external video links (YouTube, Streamable, etc.)
+        if post_hint == "rich:video" or domain in ["youtube.com", "youtu.be", "streamable.com"]:
+            ext_url = post_data.get("url_overridden_by_dest") or post_data.get("url")
+            return True, ext_url
+
+        # Not a video
+        if post_hint == "image":
+            print(f"  ❌ This is an IMAGE post, not a video")
+        elif post_hint == "self":
+            print(f"  ❌ This is a TEXT post, not a video")
+        elif post_hint == "link":
+            print(f"  ❌ This is a LINK post, not a video")
+        else:
+            print(f"  ❌ Post type '{post_hint}' is not a video")
+
+        return False, None
+
+    except Exception as e:
+        print(f"  Warning: Could not verify post type ({e}), trying download anyway...")
+        return True, None  # On error, try download anyway
 
 def download_video(url, video_id):
     """Stage 1: Download video using yt-dlp with Reddit fallbacks."""
