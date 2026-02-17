@@ -210,30 +210,73 @@ def download_video(url, video_id):
     if os.path.exists("cookies.txt") and os.path.getsize("cookies.txt") > 0:
         cookies_arg = ["--cookies", "cookies.txt"]
 
+    # Common args to bypass 403 blocks
+    common_args = [
+        "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "--referer", "https://www.reddit.com/",
+        "--geo-bypass",
+        "--no-check-certificates",
+        "--no-playlist",
+        "--retries", "10",
+        "--fragment-retries", "10",
+        "--socket-timeout", "30",
+        "-o", output_path,
+    ]
+
+    # Attempt 1: Best quality with merge
     cmd = [
         "yt-dlp",
         *cookies_arg,
-        "-f", "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
+        "-f", "bestvideo[height<=1080]+bestaudio/best[height<=1080]/b",
         "--merge-output-format", "mp4",
-        "--no-playlist",
-        "--retries", "5",
-        "--fragment-retries", "5",
-        "--socket-timeout", "30",
-        "-o", output_path,
+        *common_args,
         url,
     ]
 
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
 
     if result.returncode != 0:
-        # Try simpler format if first attempt fails
+        print(f"  Attempt 1 failed, trying fallback...")
+        # Attempt 2: Simple best pre-merged format (suppress warning with -f b)
         cmd_simple = [
             "yt-dlp", *cookies_arg,
-            "-f", "best", "--no-playlist",
-            "-o", output_path, url,
+            "-f", "b",
+            "--merge-output-format", "mp4",
+            *common_args,
+            url,
         ]
         result = subprocess.run(cmd_simple, capture_output=True, text=True, timeout=300)
-        if result.returncode != 0:
+
+    if result.returncode != 0:
+        print(f"  Attempt 2 failed, trying without format selection...")
+        # Attempt 3: No format selection — let yt-dlp decide
+        cmd_auto = [
+            "yt-dlp", *cookies_arg,
+            "--merge-output-format", "mp4",
+            *common_args,
+            url,
+        ]
+        result = subprocess.run(cmd_auto, capture_output=True, text=True, timeout=300)
+
+    if result.returncode != 0:
+        # Attempt 4: Direct curl download for v.redd.it URLs
+        if "redd.it" in url or "reddit" in url:
+            print(f"  yt-dlp failed, trying direct curl download...")
+            dash_url = url.rstrip("/") + "/DASH_720.mp4"
+            if "DASH" not in url:
+                curl_result = subprocess.run(
+                    ["curl", "-L", "-o", output_path,
+                     "-H", "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                     "-H", "Referer: https://www.reddit.com/",
+                     "--max-time", "120",
+                     dash_url],
+                    capture_output=True, text=True, timeout=180,
+                )
+                if curl_result.returncode != 0 or not os.path.exists(output_path):
+                    raise RuntimeError(f"Download failed (all attempts): {result.stderr[-500:]}")
+            else:
+                raise RuntimeError(f"Download failed: {result.stderr[-500:]}")
+        else:
             raise RuntimeError(f"Download failed: {result.stderr[-500:]}")
 
     if not os.path.exists(output_path):
