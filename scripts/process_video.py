@@ -207,8 +207,12 @@ def download_video(url, video_id):
 
     # Check for cookies file
     cookies_arg = []
-    if os.path.exists("cookies.txt") and os.path.getsize("cookies.txt") > 0:
+    has_cookies = os.path.exists("cookies.txt") and os.path.getsize("cookies.txt") > 0
+    if has_cookies:
         cookies_arg = ["--cookies", "cookies.txt"]
+        print(f"  Cookies file loaded ({os.path.getsize('cookies.txt')} bytes)")
+    else:
+        print(f"  ⚠️ No cookies.txt found — Reddit downloads may fail!")
 
     # Common headers for all requests
     HEADERS = {
@@ -277,6 +281,26 @@ def download_video(url, video_id):
     )
 
 
+def _load_cookies_for_requests():
+    """Load cookies from cookies.txt (Netscape format) for use with requests."""
+    cookies = {}
+    if not os.path.exists("cookies.txt"):
+        return cookies
+    try:
+        with open("cookies.txt", "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.split("\t")
+                if len(parts) >= 7:
+                    cookies[parts[5]] = parts[6]
+        print(f"  Loaded {len(cookies)} cookies from cookies.txt")
+    except Exception as e:
+        print(f"  Warning: Could not parse cookies.txt: {e}")
+    return cookies
+
+
 def _resolve_reddit_video_url(url, headers):
     """Use Reddit's JSON API to extract the actual video download URL."""
     try:
@@ -296,8 +320,11 @@ def _resolve_reddit_video_url(url, headers):
         if not json_url:
             return None
 
+        # Load cookies for authenticated Reddit access
+        cookie_jar = _load_cookies_for_requests()
+
         print(f"  Resolving via Reddit JSON API...")
-        resp = requests.get(json_url, headers=headers, timeout=15, allow_redirects=True)
+        resp = requests.get(json_url, headers=headers, cookies=cookie_jar, timeout=15, allow_redirects=True)
 
         if resp.status_code != 200:
             print(f"  Reddit JSON API returned {resp.status_code}")
