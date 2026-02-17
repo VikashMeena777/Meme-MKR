@@ -1126,15 +1126,15 @@ def render_meme(video_path, meme_data, transcript_data, video_id):
             step2_output = f"{WORK_DIR}/step2_subs.mp4"
             subtitle_filter = (
                 f"subtitles={srt_path}:force_style='"
-                "FontName=DejaVu Sans Bold,"
-                "FontSize=20,"
+                "FontName=Noto Sans,"
+                "FontSize=14,"
                 "PrimaryColour=&H00FFFFFF,"
                 "OutlineColour=&H00000000,"
                 "BorderStyle=3,"
-                "Outline=2,"
+                "Outline=1,"
                 "Shadow=1,"
                 "Alignment=2,"
-                "MarginV=40'"
+                "MarginV=25'"
             )
             run_ffmpeg([
                 "-i", current_input,
@@ -1226,20 +1226,37 @@ def render_meme(video_path, meme_data, transcript_data, video_id):
     return final_output
 
 
+def _find_font():
+    """Find the best available font for text overlays (Noto Sans preferred for Hindi support)."""
+    candidates = [
+        "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    # Last resort: let ffmpeg auto-detect
+    return ""
+
+
 def build_text_filter(top_text, bottom_text, style):
     """Build FFmpeg drawtext filter based on meme style."""
     if not top_text:
         return ""
 
     top_escaped = escape_ffmpeg_text(top_text)
-    font = "fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+    font_path = _find_font()
+    font = f"fontfile={font_path}" if font_path else ""
 
     if style == "pov":
         # POV text at top center with shadow
         return (
             f"drawtext=text='{top_escaped}':"
             f"{font}:"
-            "fontsize=44:fontcolor=white:"
+            "fontsize=28:fontcolor=white:"
             "borderw=3:bordercolor=black:"
             "x=(w-text_w)/2:y=80:"
             "shadowcolor=black@0.6:shadowx=2:shadowy=2"
@@ -1250,7 +1267,7 @@ def build_text_filter(top_text, bottom_text, style):
         top_filter = (
             f"drawtext=text='{top_escaped}':"
             f"{font}:"
-            "fontsize=46:fontcolor=white:"
+            "fontsize=32:fontcolor=white:"
             "borderw=4:bordercolor=black:"
             "x=(w-text_w)/2:y=50"
         )
@@ -1259,7 +1276,7 @@ def build_text_filter(top_text, bottom_text, style):
             top_filter += (
                 f",drawtext=text='{bottom_escaped}':"
                 f"{font}:"
-                "fontsize=46:fontcolor=white:"
+                "fontsize=32:fontcolor=white:"
                 "borderw=4:bordercolor=black:"
                 "x=(w-text_w)/2:y=h-th-50"
             )
@@ -1271,7 +1288,7 @@ def build_text_filter(top_text, bottom_text, style):
             "drawbox=x=0:y=0:w=iw:h=100:color=black@0.6:t=fill,"
             f"drawtext=text='{top_escaped}':"
             f"{font}:"
-            "fontsize=36:fontcolor=white:"
+            "fontsize=24:fontcolor=white:"
             "x=(w-text_w)/2:y=30"
         )
 
@@ -1280,7 +1297,7 @@ def build_text_filter(top_text, bottom_text, style):
         return (
             f"drawtext=text='{top_escaped}':"
             f"{font}:"
-            "fontsize=40:fontcolor=white:"
+            "fontsize=26:fontcolor=white:"
             "borderw=3:bordercolor=black:"
             "x=(w-text_w)/2:y=h-th-100:"
             "shadowcolor=black@0.5:shadowx=2:shadowy=2"
