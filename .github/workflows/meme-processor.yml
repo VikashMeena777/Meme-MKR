@@ -78,8 +78,30 @@ jobs:
         run: |
           touch cookies.txt
           if [ -n "${{ secrets.REDDIT_COOKIES }}" ]; then
-            echo "${{ secrets.REDDIT_COOKIES }}" >> cookies.txt
-            echo "✅ Reddit cookies configured"
+            COOKIES="${{ secrets.REDDIT_COOKIES }}"
+            
+            # Check if it looks like Netscape cookie format (starts with # or domain)
+            if echo "$COOKIES" | head -1 | grep -qE '^(#|\.reddit|reddit)'; then
+              echo "Cookies appear to be in plain text Netscape format"
+              echo "$COOKIES" > cookies.txt
+            else
+              # Try base64 decoding
+              echo "Trying base64 decode..."
+              echo "$COOKIES" | base64 -d > cookies.txt 2>/dev/null || {
+                echo "Base64 failed, using as plain text"
+                echo "$COOKIES" > cookies.txt
+              }
+            fi
+            
+            # Validate cookies file
+            COOKIE_LINES=$(grep -v '^#' cookies.txt | grep -v '^$' | wc -l)
+            echo "✅ Reddit cookies configured ($COOKIE_LINES cookie entries)"
+            
+            # Debug: show first line format (redacted)
+            head -1 cookies.txt | cut -c1-30
+          else
+            echo "⚠️ No REDDIT_COOKIES secret set — Reddit downloads will likely fail!"
+            echo "Add your Reddit cookies.txt content as REDDIT_COOKIES repository secret"
           fi
 
       # ── Set Video Info ───────────────────────────────────────────────
