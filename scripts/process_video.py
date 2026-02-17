@@ -75,6 +75,7 @@ def main():
 
     try:
         # ── Stage 0: Pre-validate Reddit URL ─────────────────────────────
+        resolved_video_url = None  # v.redd.it URL for fallback downloads
         if "reddit.com" in video_url or "redd.it" in video_url:
             log_stage("PRE-VALIDATE URL")
             is_video, resolved_url = check_reddit_post_type(video_url)
@@ -87,11 +88,14 @@ def main():
                 return
             if resolved_url:
                 print(f"  Resolved video URL: {resolved_url}")
-                video_url = resolved_url
+                # DON'T replace video_url — yt-dlp needs the Reddit post URL
+                # to use its [Reddit] extractor with cookie support.
+                # Store resolved URL separately for requests-based fallback.
+                resolved_video_url = resolved_url
 
         # ── Stage 1: Download ─────────────────────────────────────────────
         log_stage("DOWNLOAD")
-        raw_video = download_video(video_url, video_id)
+        raw_video = download_video(video_url, video_id, resolved_video_url)
         output["stages_completed"].append("download")
 
         # ── Stage 2: Validate Duration ────────────────────────────────────
@@ -303,8 +307,14 @@ def check_reddit_post_type(url):
         print(f"  Warning: Could not verify post type ({e}), trying download anyway...")
         return True, None  # On error, try download anyway
 
-def download_video(url, video_id):
-    """Stage 1: Download video using yt-dlp with Reddit fallbacks."""
+def download_video(url, video_id, resolved_video_url=None):
+    """Stage 1: Download video using yt-dlp with Reddit fallbacks.
+    
+    Args:
+        url: Original URL (Reddit post URL or direct URL)
+        video_id: Video ID for filename
+        resolved_video_url: Pre-resolved v.redd.it URL for fallback downloads
+    """
     output_path = f"{WORK_DIR}/{video_id}_raw.mp4"
 
     # Check for cookies file
@@ -316,6 +326,9 @@ def download_video(url, video_id):
     else:
         print(f"  ⚠️ No cookies.txt found — Reddit downloads may fail!")
 
+    # Load cookies for requests-based downloads
+    cookie_jar = _load_cookies_for_requests()
+
     # Common headers for all requests
     HEADERS = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -323,7 +336,8 @@ def download_video(url, video_id):
         "Referer": "https://www.reddit.com/",
     }
 
-    # ── Try yt-dlp first (works for non-Reddit URLs) ──────────────────────
+    # ── Try yt-dlp first (with original Reddit post URL for [Reddit] extractor) ──
+    print(f"  yt-dlp attempt with URL: {url}")
     common_args = [
         "--user-agent", HEADERS["User-Agent"],
         "--referer", "https://www.reddit.com/",
@@ -347,26 +361,29 @@ def download_video(url, video_id):
     if result.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 10000:
         return _validate_and_return(output_path, video_id)
 
-    print(f"  yt-dlp failed, trying Reddit API fallback...")
+    print(f"  yt-dlp failed ({result.stderr.strip()[:100]}), trying fallbacks...")
 
-    # ── Reddit JSON API: resolve actual video URL ────────────────────────
-    video_download_url = _resolve_reddit_video_url(url, HEADERS)
+    # ── Use pre-resolved v.redd.it URL if available ────────────────────────
+    fallback_url = resolved_video_url
 
-    if video_download_url:
-        print(f"  Found direct video URL, downloading...")
-        success = _download_with_requests(video_download_url, output_path, HEADERS)
+    # If no pre-resolved URL, try Reddit JSON API to resolve it
+    if not fallback_url:
+        fallback_url = _resolve_reddit_video_url(url, HEADERS)
+
+    if fallback_url and "v.redd.it" in fallback_url:
+        print(f"  Trying direct download: {fallback_url}")
+        success = _download_with_requests(fallback_url, output_path, HEADERS, cookie_jar)
         if success:
             return _validate_and_return(output_path, video_id)
 
-    # ── Fallback: try v.redd.it DASH URLs directly ────────────────────────
-    if "redd.it" in url:
-        base_url = url.rstrip("/")
+        # Try DASH quality cascade
+        base_url = fallback_url.split("/DASH")[0] if "/DASH" in fallback_url else fallback_url.rstrip("/")
         dash_qualities = ["DASH_720.mp4", "DASH_480.mp4", "DASH_360.mp4", "DASH_240.mp4"]
 
         for quality in dash_qualities:
             dash_url = f"{base_url}/{quality}"
             print(f"  Trying DASH: {quality}...")
-            success = _download_with_requests(dash_url, output_path, HEADERS)
+            success = _download_with_requests(dash_url, output_path, HEADERS, cookie_jar)
             if success:
                 return _validate_and_return(output_path, video_id)
 
@@ -477,10 +494,10 @@ def _resolve_reddit_video_url(url, headers):
         return None
 
 
-def _download_with_requests(url, output_path, headers):
-    """Download a file using requests with proper headers. Returns True on success."""
+def _download_with_requests(url, output_path, headers, cookies=None):
+    """Download a file using requests with proper headers + cookies. Returns True on success."""
     try:
-        resp = requests.get(url, headers=headers, stream=True, timeout=120, allow_redirects=True)
+        resp = requests.get(url, headers=headers, cookies=cookies, stream=True, timeout=120, allow_redirects=True)
 
         if resp.status_code != 200:
             print(f"  HTTP {resp.status_code} for {url}")
