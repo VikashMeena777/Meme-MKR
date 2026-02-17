@@ -65,8 +65,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
-          # Install better fonts for text overlays
-          sudo apt-get install -y fonts-dejavu-core fonts-liberation
+          # Install fonts: DejaVu for Latin, Noto for Hindi/Devanagari/multilingual
+          sudo apt-get install -y fonts-dejavu-core fonts-liberation fonts-noto fonts-noto-cjk
 
       - name: Install Python dependencies
         run: |
