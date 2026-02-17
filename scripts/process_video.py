@@ -202,7 +202,7 @@ def main():
 # ─── Stage Functions ─────────────────────────────────────────────────────────
 
 def download_video(url, video_id):
-    """Stage 1: Download video using yt-dlp."""
+    """Stage 1: Download video using yt-dlp with Reddit fallbacks."""
     output_path = f"{WORK_DIR}/{video_id}_raw.mp4"
 
     # Check for cookies file
@@ -210,9 +210,16 @@ def download_video(url, video_id):
     if os.path.exists("cookies.txt") and os.path.getsize("cookies.txt") > 0:
         cookies_arg = ["--cookies", "cookies.txt"]
 
-    # Common args to bypass 403 blocks
+    # Common headers for all requests
+    HEADERS = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "video/*,*/*",
+        "Referer": "https://www.reddit.com/",
+    }
+
+    # ── Try yt-dlp first (works for non-Reddit URLs) ──────────────────────
     common_args = [
-        "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "--user-agent", HEADERS["User-Agent"],
         "--referer", "https://www.reddit.com/",
         "--geo-bypass",
         "--no-check-certificates",
@@ -223,69 +230,171 @@ def download_video(url, video_id):
         "-o", output_path,
     ]
 
-    # Attempt 1: Best quality with merge
     cmd = [
-        "yt-dlp",
-        *cookies_arg,
+        "yt-dlp", *cookies_arg,
         "-f", "bestvideo[height<=1080]+bestaudio/best[height<=1080]/b",
         "--merge-output-format", "mp4",
-        *common_args,
-        url,
+        *common_args, url,
     ]
-
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
 
-    if result.returncode != 0:
-        print(f"  Attempt 1 failed, trying fallback...")
-        # Attempt 2: Simple best pre-merged format (suppress warning with -f b)
-        cmd_simple = [
-            "yt-dlp", *cookies_arg,
-            "-f", "b",
-            "--merge-output-format", "mp4",
-            *common_args,
-            url,
-        ]
-        result = subprocess.run(cmd_simple, capture_output=True, text=True, timeout=300)
+    if result.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 10000:
+        return _validate_and_return(output_path, video_id)
 
-    if result.returncode != 0:
-        print(f"  Attempt 2 failed, trying without format selection...")
-        # Attempt 3: No format selection — let yt-dlp decide
-        cmd_auto = [
-            "yt-dlp", *cookies_arg,
-            "--merge-output-format", "mp4",
-            *common_args,
-            url,
-        ]
-        result = subprocess.run(cmd_auto, capture_output=True, text=True, timeout=300)
+    print(f"  yt-dlp failed, trying Reddit API fallback...")
 
-    if result.returncode != 0:
-        # Attempt 4: Direct curl download for v.redd.it URLs
-        if "redd.it" in url or "reddit" in url:
-            print(f"  yt-dlp failed, trying direct curl download...")
-            dash_url = url.rstrip("/") + "/DASH_720.mp4"
-            if "DASH" not in url:
-                curl_result = subprocess.run(
-                    ["curl", "-L", "-o", output_path,
-                     "-H", "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                     "-H", "Referer: https://www.reddit.com/",
-                     "--max-time", "120",
-                     dash_url],
-                    capture_output=True, text=True, timeout=180,
-                )
-                if curl_result.returncode != 0 or not os.path.exists(output_path):
-                    raise RuntimeError(f"Download failed (all attempts): {result.stderr[-500:]}")
-            else:
-                raise RuntimeError(f"Download failed: {result.stderr[-500:]}")
+    # ── Reddit JSON API: resolve actual video URL ────────────────────────
+    video_download_url = _resolve_reddit_video_url(url, HEADERS)
+
+    if video_download_url:
+        print(f"  Found direct video URL, downloading...")
+        success = _download_with_requests(video_download_url, output_path, HEADERS)
+        if success:
+            return _validate_and_return(output_path, video_id)
+
+    # ── Fallback: try v.redd.it DASH URLs directly ────────────────────────
+    if "redd.it" in url:
+        base_url = url.rstrip("/")
+        dash_qualities = ["DASH_720.mp4", "DASH_480.mp4", "DASH_360.mp4", "DASH_240.mp4"]
+
+        for quality in dash_qualities:
+            dash_url = f"{base_url}/{quality}"
+            print(f"  Trying DASH: {quality}...")
+            success = _download_with_requests(dash_url, output_path, HEADERS)
+            if success:
+                return _validate_and_return(output_path, video_id)
+
+    # ── Last resort: yt-dlp with no format selection ──────────────────────
+    cmd_auto = ["yt-dlp", *cookies_arg, *common_args, url]
+    result = subprocess.run(cmd_auto, capture_output=True, text=True, timeout=300)
+
+    if result.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 10000:
+        return _validate_and_return(output_path, video_id)
+
+    raise RuntimeError(
+        f"Download failed (all attempts). URL: {url}\n"
+        f"yt-dlp stderr: {result.stderr[-300:]}"
+    )
+
+
+def _resolve_reddit_video_url(url, headers):
+    """Use Reddit's JSON API to extract the actual video download URL."""
+    try:
+        # Convert Reddit post URL to JSON API URL
+        json_url = None
+
+        if "reddit.com" in url:
+            # Post URL like https://www.reddit.com/r/funny/comments/abc123/...
+            json_url = url.rstrip("/") + ".json"
+        elif "redd.it" in url and "v.redd.it" not in url:
+            # Short URL like https://redd.it/abc123
+            json_url = f"https://www.reddit.com/comments/{url.split('/')[-1]}.json"
         else:
-            raise RuntimeError(f"Download failed: {result.stderr[-500:]}")
+            # v.redd.it URL - try to use it directly
+            return url
 
+        if not json_url:
+            return None
+
+        print(f"  Resolving via Reddit JSON API...")
+        resp = requests.get(json_url, headers=headers, timeout=15, allow_redirects=True)
+
+        if resp.status_code != 200:
+            print(f"  Reddit JSON API returned {resp.status_code}")
+            return None
+
+        data = resp.json()
+
+        # Navigate the Reddit JSON structure
+        if isinstance(data, list) and len(data) > 0:
+            post_data = data[0].get("data", {}).get("children", [{}])[0].get("data", {})
+        elif isinstance(data, dict):
+            post_data = data.get("data", {}).get("children", [{}])[0].get("data", {})
+        else:
+            return None
+
+        # Try to get the video URL from the Reddit media object
+        media = post_data.get("secure_media") or post_data.get("media")
+        if media and "reddit_video" in media:
+            video_url = media["reddit_video"].get("fallback_url")
+            if video_url:
+                # Remove query params that might cause issues
+                video_url = video_url.split("?")[0]
+                print(f"  Resolved video URL: {video_url}")
+                return video_url
+
+        # Try crosspost parent
+        crosspost = post_data.get("crosspost_parent_list", [])
+        if crosspost:
+            media = crosspost[0].get("secure_media") or crosspost[0].get("media")
+            if media and "reddit_video" in media:
+                video_url = media["reddit_video"].get("fallback_url")
+                if video_url:
+                    video_url = video_url.split("?")[0]
+                    print(f"  Resolved crosspost video URL: {video_url}")
+                    return video_url
+
+        # Try url_overridden_by_dest (external video links)
+        external_url = post_data.get("url_overridden_by_dest") or post_data.get("url")
+        if external_url and any(ext in external_url for ext in [".mp4", ".webm", "v.redd.it"]):
+            print(f"  Found external URL: {external_url}")
+            return external_url
+
+        print(f"  Could not resolve video URL from Reddit JSON")
+        return None
+
+    except Exception as e:
+        print(f"  Reddit JSON API error: {e}")
+        return None
+
+
+def _download_with_requests(url, output_path, headers):
+    """Download a file using requests with proper headers. Returns True on success."""
+    try:
+        resp = requests.get(url, headers=headers, stream=True, timeout=120, allow_redirects=True)
+
+        if resp.status_code != 200:
+            print(f"  HTTP {resp.status_code} for {url}")
+            return False
+
+        # Check content-type isn't HTML (error page)
+        content_type = resp.headers.get("Content-Type", "")
+        if "text/html" in content_type:
+            print(f"  Got HTML instead of video (blocked)")
+            return False
+
+        # Download the file
+        total_size = 0
+        with open(output_path, "wb") as f:
+            for chunk in resp.iter_content(chunk_size=8192):
+                f.write(chunk)
+                total_size += len(chunk)
+
+        # Check minimum file size (10KB = likely not a real video)
+        if total_size < 10000:
+            print(f"  Downloaded file too small ({total_size} bytes), likely not a video")
+            if os.path.exists(output_path):
+                os.remove(output_path)
+            return False
+
+        print(f"  Downloaded {total_size / 1024 / 1024:.1f}MB")
+        return True
+
+    except Exception as e:
+        print(f"  Download error: {e}")
+        if os.path.exists(output_path):
+            os.remove(output_path)
+        return False
+
+
+def _validate_and_return(output_path, video_id):
+    """Validate the downloaded file is a real video and return the path."""
     if not os.path.exists(output_path):
-        # yt-dlp might have added an extension
+        # yt-dlp might have used a different extension
         for ext in [".mp4", ".webm", ".mkv"]:
             alt = f"{WORK_DIR}/{video_id}_raw{ext}"
             if os.path.exists(alt):
                 if ext != ".mp4":
-                    # Convert to mp4
                     subprocess.run([
                         "ffmpeg", "-y", "-i", alt,
                         "-c:v", "libx264", "-c:a", "aac", output_path,
@@ -297,14 +406,22 @@ def download_video(url, video_id):
         else:
             raise FileNotFoundError(f"Downloaded file not found at {output_path}")
 
-    # Validate video file
+    # Verify it's a real video file
     probe = subprocess.run(
         ["ffprobe", "-v", "error", "-select_streams", "v:0",
          "-show_entries", "stream=codec_name", "-of", "csv=p=0", output_path],
         capture_output=True, text=True,
     )
     if probe.returncode != 0:
-        raise RuntimeError("Downloaded file is not a valid video")
+        # Check what we actually downloaded
+        file_size = os.path.getsize(output_path) if os.path.exists(output_path) else 0
+        # Read first bytes to check if it's HTML
+        with open(output_path, "rb") as f:
+            head = f.read(200)
+        if b"<html" in head.lower() or b"<!doctype" in head.lower():
+            os.remove(output_path)
+            raise RuntimeError("Downloaded an HTML error page instead of video (Reddit blocked)")
+        raise RuntimeError(f"Downloaded file is not a valid video (size: {file_size} bytes)")
 
     print(f"  Downloaded: {output_path} ({os.path.getsize(output_path) / 1024 / 1024:.1f}MB)")
     return output_path
