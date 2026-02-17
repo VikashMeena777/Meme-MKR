@@ -110,11 +110,13 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" == "repository_dispatch" ]; then
             echo "video_url=${{ github.event.client_payload.video_url }}" >> $GITHUB_OUTPUT
+            echo "reddit_video_url=${{ github.event.client_payload.reddit_video_url }}" >> $GITHUB_OUTPUT
             echo "video_id=${{ github.event.client_payload.video_id }}" >> $GITHUB_OUTPUT
             echo "reddit_title=${{ github.event.client_payload.reddit_title }}" >> $GITHUB_OUTPUT
             echo "reddit_sub=${{ github.event.client_payload.reddit_sub }}" >> $GITHUB_OUTPUT
           else
             echo "video_url=${{ github.event.inputs.video_url }}" >> $GITHUB_OUTPUT
+            echo "reddit_video_url=" >> $GITHUB_OUTPUT
             echo "video_id=${{ github.event.inputs.video_id }}" >> $GITHUB_OUTPUT
             echo "reddit_title=${{ github.event.inputs.reddit_title }}" >> $GITHUB_OUTPUT
             echo "reddit_sub=${{ github.event.inputs.reddit_sub }}" >> $GITHUB_OUTPUT
@@ -124,6 +126,7 @@ jobs:
       - name: Process video through meme pipeline
         env:
           VIDEO_URL: ${{ steps.video-info.outputs.video_url }}
+          REDDIT_VIDEO_URL: ${{ steps.video-info.outputs.reddit_video_url }}
           VIDEO_ID: ${{ steps.video-info.outputs.video_id }}
           REDDIT_TITLE: ${{ steps.video-info.outputs.reddit_title }}
           REDDIT_SUB: ${{ steps.video-info.outputs.reddit_sub }}
