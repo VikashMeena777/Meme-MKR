@@ -925,8 +925,11 @@ Scene Type: {context['scene_type']}
 
 1. If transcript is weak/low confidence → rely MORE on visual descriptions
 2. If both are unclear → infer the most likely relatable Indian situation
-3. top_text MUST be 4-6 words in Hinglish — a full relatable sentence. NOT 2-3 words.
+3. top_text MUST be 4-6 words in Hinglish — directly describe what's happening in the video.
+   The top_text should match the VIDEO CONTENT, not be a random joke.
+   First understand the video from transcript + visuals, then write a relatable Hinglish text about THAT specific situation.
    Examples: "Jab teacher unexpectedly roll call le le", "POV: Dost ne teri crush ko follow kiya"
+   BAD example: Random unrelated text that doesn't match the video content.
 4. Must be genuinely FUNNY, savage, cringe, or relatable — viral-worthy
 5. The meme should feel like something @IndianDankMemes or @theindianmemer would post
 6. Use POV/relatable/cringe/savage tone as appropriate
@@ -1177,7 +1180,7 @@ def render_meme(video_path, meme_data, transcript_data, video_id):
             subtitle_filter = (
                 f"subtitles={srt_path}:force_style='"
                 "FontName=Noto Sans,"
-                "FontSize=14,"
+                "FontSize=10,"
                 "PrimaryColour=&H00FFFFFF,"
                 "OutlineColour=&H00000000,"
                 "BorderStyle=3,"
@@ -1281,9 +1284,9 @@ def render_meme(video_path, meme_data, transcript_data, video_id):
         "pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,"
         f"drawtext=text='{watermark_escaped}':"
         f"fontfile={_find_font()}:"
-        "fontcolor=white@0.65:fontsize=18:"
-        "x=w-tw-20:y=22:"
-        "shadowcolor=black@0.4:shadowx=1:shadowy=1"
+        "fontcolor=white@0.7:fontsize=28:"
+        "x=(w-text_w)/2:y=h-th-60:"
+        "shadowcolor=black@0.5:shadowx=2:shadowy=2"
     )
 
     run_ffmpeg([
